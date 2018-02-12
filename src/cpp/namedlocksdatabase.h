@@ -87,7 +87,7 @@ namespace hb {
 				m_session.Close();
 				m_ds.Close();
 				m_isopen = false;
-			} return false;
+			} else return false;
 			return true;
 		}
 		bool reopen() {
