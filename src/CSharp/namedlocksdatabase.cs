@@ -1,5 +1,6 @@
 
 using System;
+using System.Data.SqlClient;
 
 
 namespace hb {
@@ -24,7 +25,21 @@ namespace hb {
 		static NamedBusinessLockConnectionNames connectSettings;
 
 		bool executeCommand(string command,out int rowsEffected) {
+			string connetionString = null;
 			rowsEffected = 0;
+			SqlConnection cnn;
+			connetionString = "Data Source="+ connectSettings.Server+";Initial Catalog="+
+				connectSettings.Database+";User ID="+connectSettings.User+";Password="+
+				connectSettings.Password;
+			cnn = new SqlConnection(connetionString);
+			try {
+				cnn.Open();
+				SqlCommand cmd = new SqlCommand(command, cnn);
+				rowsEffected=cmd.ExecuteNonQuery();
+				cnn.Close();
+			}catch(Exception ex) {
+
+			}
 			return false;
 		}
 
@@ -42,13 +57,14 @@ namespace hb {
 			return open();
 		}
 		bool check_valid_database() {
+			int rowsEffected;
 			if (isOpen)
-				return executeCommand(createStatement);
+				return executeCommand(createStatement, out rowsEffected);
 			return false;
 		}
 
 		public NamedBusinessLockConnection() { isOpen = false; }
-		public ~NamedBusinessLockConnection() { close(); }
+		~NamedBusinessLockConnection() { close(); }
 		public bool initializeDatabaseConnection(string server,string database,string user,string password) {
 			connectSettings.Server = server;
 			connectSettings.Database = database;
@@ -73,11 +89,11 @@ namespace hb {
 		public string Name { get; private set; }
 		public string ProcessId { get; private set; }
 		public int LastErrorCode { get; private set; }
-		public static const int NamedBusinessDefaultTimeOut = 120;
+		public const int NamedBusinessDefaultTimeOut = 120;
 		public NamedBusinessLockDatabase(string name,string processId, bool autoLock=false) {
 			isAutoLocked = autoLock;
 		}
-		public ~NamedBusinessLockDatabase() {
+		~NamedBusinessLockDatabase() {
 
 		}
 		bool Lock(int waitForLockSec=NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut,
