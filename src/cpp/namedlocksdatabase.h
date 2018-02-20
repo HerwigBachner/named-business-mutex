@@ -323,7 +323,7 @@ namespace hb {
 		int try_lock(const string process_id, boost::posix_time::ptime &time_out) {
 			int result = -1;
 			if (!check())return result;
-			return increment(process_id, time_out);
+			return increment(process_id, time_out) ? 1:-1;
 		}
 
 	public:
@@ -341,12 +341,12 @@ namespace hb {
 		int unlock(const string process_id) {
 			int result = -1;
 			if (!check())return result;
-			return decrement(process_id);
+			return decrement(process_id)? 1:-1;
 		}
 		int try_lock(const string process_id, int time_out_sec = NamedBusinessDefaultTimeOut()) {
 			int result = -1;
 			if (!check())return result;
-			return increment(process_id, time_out_sec);
+			return increment(process_id, time_out_sec)? 1:-1;
 		}
 		int time_lock(const string process_id, boost::posix_time::ptime timeout,
 			int wait_for_lock_sec = NamedBusinessDefaultTimeOut()) {
