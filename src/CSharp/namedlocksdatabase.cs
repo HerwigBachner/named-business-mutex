@@ -18,6 +18,7 @@ namespace hb {
 	class NamedBusinessLockConnection {
 		SqlConnection connection = null;
 		public bool isOpen { get; private set; }
+		public string lastErrorMessage { get; private set; }
 		static string createStatement = @"IF object_id('named_mutex') is null 
 			BEGIN
 			CREATE TABLE[named_mutex]([name] varchar(256) NOT NULL, [processid] varchar(256),
@@ -43,13 +44,14 @@ namespace hb {
 		bool executeCommand(string command, out int rowsEffected) {
 			bool result = false;
 			rowsEffected = 0;
+			lastErrorMessage = "";
 			if (!isOpen) return result;
 			try {
 				SqlCommand cmd = new SqlCommand(command, connection);
 				rowsEffected = cmd.ExecuteNonQuery();
 				result = true;
 			} catch (Exception ex) {
-
+				lastErrorMessage = ex.Message;
 			}
 			return false;
 		}
@@ -62,6 +64,7 @@ namespace hb {
 
 		bool createData(string name, string processId, int timeOutSec) {
 			bool result = false;
+			lastErrorMessage = "";
 			if (isOpen) {
 				try {
 					SqlCommand cmd = new SqlCommand(insertStatement, connection);
@@ -71,14 +74,15 @@ namespace hb {
 					cmd.Parameters.Add(new SqlParameter("@timeout", DateTime.UtcNow.AddSeconds(timeOutSec)));
 					result = cmd.ExecuteNonQuery() == 1;
 				} catch (Exception ex) {
-
+					lastErrorMessage = ex.Message;
 				}
 			}
 			return result;
 		}
-		bool readData(string name, ref string processId, ref int lockCount, ref DateTime timeout,
+		public bool readData(string name, ref string processId, ref int lockCount, ref DateTime timeout,
 			bool checknew = false) {
 			bool result = false;
+			lastErrorMessage = "";
 			if (isOpen) {
 				try {
 					SqlCommand cmd = new SqlCommand(readStatement, connection);
@@ -95,13 +99,14 @@ namespace hb {
 						}
 					}
 				} catch (Exception ex) {
-
+					lastErrorMessage = ex.Message;
 				}
 			}
 			return result;
 		}
 		bool incrementData(string name, string processId, int lockCount, DateTime timeout) {
 			bool result = false;
+			lastErrorMessage = "";
 			if (isOpen) {
 				try {
 					SqlCommand cmd = new SqlCommand(incrementStatement, connection);
@@ -111,20 +116,22 @@ namespace hb {
 					cmd.Parameters.Add(new SqlParameter("@timeout", timeout));
 					result = cmd.ExecuteNonQuery() == 1;
 				} catch (Exception ex) {
-
+					lastErrorMessage = ex.Message;
 				}
 			}
 			return result;
 		}
-		bool decrementData(string name) {
+		bool decrementData(string name, string processId) {
 			bool result = false;
+			lastErrorMessage = "";
 			if (isOpen) {
 				try {
 					SqlCommand cmd = new SqlCommand(decrementStatement, connection);
 					cmd.Parameters.Add(new SqlParameter("@name", name));
+					cmd.Parameters.Add(new SqlParameter("@processid", processId));
 					result = cmd.ExecuteNonQuery() == 1;
 				} catch (Exception ex) {
-
+					lastErrorMessage = ex.Message;
 				}
 			}
 			return result;
@@ -133,6 +140,7 @@ namespace hb {
 		#region Interface
 		public bool open(bool checkDatabaseExists = false) {
 			bool result = false;
+			lastErrorMessage = "";
 			if (!isOpen) {
 				string connectString = "Data Source=" + connectSettings.Server + ";Initial Catalog=" +
 					connectSettings.Database + ";User ID=" + connectSettings.User + ";Password=" +
@@ -144,6 +152,7 @@ namespace hb {
 					result = true;
 				} catch (Exception ex) {
 					connection = null;
+					lastErrorMessage = ex.Message;
 				}
 			}
 			if (checkDatabaseExists) result = check_valid_database();
@@ -160,15 +169,15 @@ namespace hb {
 			close();
 			return open();
 		}
-		public bool decrement(string name,string processId) {
+		public bool decrement(string name,string processId, ref int lockCount) {
 			bool result = false;
 			try {
 				string mProcessId="";
-				int mLockCount = 0;
 				DateTime mTimeout = DateTime.UtcNow;
-				if (readData(name,ref mProcessId,ref mLockCount,ref mTimeout) && 
-					(mProcessId == processId) && (mLockCount > 0))
-					result = decrementData(name);
+				if (readData(name, ref mProcessId, ref lockCount, ref mTimeout) &&
+					(mProcessId == processId) && (lockCount > 0)) {
+					if (result = decrementData(name, processId)) lockCount--;
+				}
 			} catch (Exception ex) {
 			}
 			return result;
@@ -180,7 +189,7 @@ namespace hb {
 				DateTime mTimeout = DateTime.UtcNow;
 				int mLockCount = 0;
 				if (readData(name, ref mProcessId, ref mLockCount, ref mTimeout, true)) {
-					if ((mLockCount <= 0) || mTimeout> DateTime.UtcNow) {
+					if ((mLockCount <= 0) || mTimeout < DateTime.UtcNow) {
 						lockCount = 1;
 						result = incrementData(name,processId,lockCount,timeout);
 					} else if (mProcessId == processId) {
@@ -214,8 +223,13 @@ namespace hb {
 	public class NamedBusinessLockDatabase {
 		private bool isAutoLocked = false;
 		private NamedBusinessLockConnection connection = new NamedBusinessLockConnection();
-		private bool check() {
-			if (!connection.isOpen && !connection.open()) return false;
+		private bool check(NamedMutexDBCallbackBreak callbackBreak) {
+			if (!connection.isOpen && !connection.open()) {
+				if(callbackBreak != null) {
+					callbackBreak("Connection not open");
+				}
+				return false;
+			}
 			return true;
 		}
 		#region internal interface
@@ -225,34 +239,38 @@ namespace hb {
 		}
 
 
-		int _lock( int waitForLockSec, int timeoutSec) {
+		int _lock( int waitForLockSec, int timeoutSec, NamedMutexDBCallbackBreak callbackBreak) {
 			int result = -1;
-			if (!check()) return result;
+			if (!check(callbackBreak)) return result;
 			for (int t = 0, tout = waitForLockSec * 1000; t < tout; t += 10) {
-				if ((result = _tryLock(timeoutSec)) > 0) break;
+				if ((result = _tryLock(timeoutSec, callbackBreak)) > 0) break;
+				if((t % 10000)==0 && callbackBreak != null) {
+					if (callbackBreak("Waiting for lock: " + (t / 1000).ToString() + " sec"))
+						break;
+				}
 				Thread.Sleep(10);
 			}
 			return result;
 		}
-		int _unlock() {
+		int _unlock(NamedMutexDBCallbackBreak callbackBreak) {
 			int result = -1;
-			if (!check()) return result;
-			return connection.decrement(Name,ProcessId) ? 1 : -1;
+			if (!check(callbackBreak)) return result;
+			return connection.decrement(Name,ProcessId,ref LockCount) ? 1 : -1;
 		}
-		int _tryLock( DateTime timeout) {
+		int _tryLock( DateTime timeout, NamedMutexDBCallbackBreak callbackBreak) {
 			int result = -1;
-			if (!check()) return result;
+			if (!check(callbackBreak)) return result;
 			return increment(timeout) ? 1 : -1;
 		}
 
-		int _tryLock(int timeoutSec) {
-			return _tryLock(DateTime.UtcNow.AddSeconds(timeoutSec));
+		int _tryLock(int timeoutSec, NamedMutexDBCallbackBreak callbackBreak) {
+			return _tryLock(DateTime.UtcNow.AddSeconds(timeoutSec), callbackBreak);
 		}
-		int _timeLock( DateTime timeout, int waitForLockSec) {
+		int _timeLock( DateTime timeout, int waitForLockSec, NamedMutexDBCallbackBreak callbackBreak) {
 			int result = -1;
-			if (!check()) return result;
+			if (!check(callbackBreak)) return result;
 			for (int t = 0, tout = waitForLockSec * 1000; t < tout; t += 10) {
-				if ((result = _tryLock( timeout)) > 0)
+				if ((result = _tryLock( timeout, callbackBreak)) > 0)
 					break;
 				Thread.Sleep(10);
 			}
@@ -264,40 +282,77 @@ namespace hb {
 		public string Name { get; private set; }
 		public string ProcessId { get; private set; }
 		public int LastErrorCode { get; private set; }
+		public string LastErrorMessage { get { return connection.lastErrorMessage; } }
 		int LockCount;
 		public const int NamedBusinessDefaultTimeOut = 120;
 		public NamedBusinessLockDatabase(string name, string processId, bool autoLock = false) {
+			Name = name;
+			ProcessId = processId;
 			isAutoLocked = autoLock;
+			LockCount = 0;
+			if (autoLock) isAutoLocked=Lock();
 		}
 		~NamedBusinessLockDatabase() {
-
+			if (isAutoLocked && IsLockedByMe) {
+				for(int i=0;i<RecursiveCount;i++)
+					Unlock();
+			}
 		}
-		bool Lock(int waitForLockSec = NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut,
+		public bool Lock(int waitForLockSec = NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut,
 			NamedMutexDBCallbackBreak callbackBreak = null,
 			int timeoutSec = NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut) {
-			return _lock(waitForLockSec,timeoutSec)>0;
+			return _lock(waitForLockSec,timeoutSec,callbackBreak)>0;
 		}
-		bool Unlock() {
-			return _unlock() > 0;
+		public bool Unlock(NamedMutexDBCallbackBreak callbackBreak=null) {
+			return _unlock(callbackBreak) > 0;
 		}
-		bool TryLock(NamedMutexDBCallbackBreak callbackBreak = null,
+		public bool TryLock(NamedMutexDBCallbackBreak callbackBreak = null,
 			int timeoutSec = NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut) {
-			return  _tryLock(timeoutSec)>0;
+			return  _tryLock(timeoutSec,callbackBreak)>0;
 		}
 
-		bool TimeLock(DateTime lockUntil,
+		public bool TimeLock(DateTime lockUntil,
 			int waitForLockSec = NamedBusinessLockDatabase.NamedBusinessDefaultTimeOut,
 			NamedMutexDBCallbackBreak callbackBreak = null) {
-			return _timeLock(lockUntil,waitForLockSec)>0;
+			return _timeLock(lockUntil,waitForLockSec,callbackBreak)>0;
 		}
-		int RecursiveCount { get { return LockCount; } }
-		bool IsLockedByMe
+		public int RecursiveCount { get { return LockCount; } }
+		public bool IsLockedByMe
 		{
-			get { return false; }
+			get {
+				if (!check(null)) return false;
+				string mProcessId=ProcessId;
+				DateTime mTimeout = DateTime.UtcNow;
+				if(connection.readData(Name,ref mProcessId,ref LockCount, ref mTimeout)) {
+					return LockCount > 0 && mTimeout > DateTime.UtcNow && mProcessId == ProcessId;
+				}
+				return false;
+			}
 		}
-		bool IsLocked { get { return LockCount >= 0; } }
+		public bool IsLocked {
+			get {
+				if (!check(null)) return false;
+				string mProcessId = ProcessId;
+				DateTime mTimeout = DateTime.UtcNow;
+				if (connection.readData(Name, ref mProcessId, ref LockCount, ref mTimeout)) {
+					return LockCount > 0 && mTimeout > DateTime.UtcNow ;
+				}
+				return false;
+			}
+		}
 
-		string LockOwnedProcessId { get { return ""; } }
+		public string LockOwnedProcessId {
+			get {
+				if (!check(null)) return "";
+				string mProcessId = ProcessId;
+				DateTime mTimeout = DateTime.UtcNow;
+				if (connection.readData(Name, ref mProcessId, ref LockCount, ref mTimeout)&&
+					LockCount > 0 && mTimeout > DateTime.UtcNow) {
+					return mProcessId;
+				}
+				return "";
+			}
+		}
 		bool Reset() {
 			return false;
 		}
