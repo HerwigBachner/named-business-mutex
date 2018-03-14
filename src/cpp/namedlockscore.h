@@ -1,4 +1,3 @@
-#pragma once
 
 
 #ifndef HB_TOOLS_NAMED_LOCK_CORE
