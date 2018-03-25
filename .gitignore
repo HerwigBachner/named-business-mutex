@@ -7,3 +7,4 @@ tests/CPPNamedLocksTest/.vs/CPPNamedLocksTest/v15/
 tests/CPPNamedLocksTest/x64/
 tests/CSharpNamedLocksTest/obj/
 tests/CPPSynchObjectsTest/x64/
+tests/CSharpNamedLocksTest/bin/
