@@ -61,37 +61,22 @@
 #define HB_NBDBSOURCE "SQLOLEDB" 
 #endif
 
-
+#include "syncobjectscore.h"
 
 namespace hb {
 	using namespace std;
 	using namespace boost::posix_time;
 
 
-	class Sync_Object {
-		ptime m_remote;
-		ptime m_local;
-		wstring m_key;
-	public:	
-		void remoteAndLocalTime(ptime& t) { m_local= m_remote = t; }
-		void localTime(ptime& t) { m_local = t; }
-		void remoteTime(ptime &t) { m_remote = t; }
-		const wstring& key()const { return m_key; }
-		Sync_Object(const wstring key=L""):m_key(key){}
-		bool isValid()const { return m_remote <= m_local; }
-		void reset_to_now(){
-			m_remote = m_local = microsec_clock::universal_time();
-		}
-	};
 
 
-	class Sync_ObjectDB : public Sync_Object {
+	class Sync_ObjectDB : public Sync_Object<ptime> {
 		wstring m_querykey;
 	public:
-		Sync_ObjectDB(const wstring key=L"",const wstring &querykey=L""):Sync_Object(key),m_querykey(querykey){}
+		Sync_ObjectDB(const wstring &key=L"",const wstring &querykey=L""):Sync_Object(key),m_querykey(querykey){}
 		void queryKey(const wstring& name) { m_querykey = name; }
 		const wstring& queryKey()const { return m_querykey; }
-
+		void resetToDefault() { m_remote = m_local = microsec_clock::universal_time(); }
 	};
 
 
@@ -253,44 +238,6 @@ namespace hb {
 
 	};
 
-	template<typename T> 
-	class SyncMap:public unordered_map<wstring, T*> {
-	public:
-		~SyncMap() {
-			for (auto it = this->begin(); it != this->end(); ++it)delete it->second;
-		}
-		T* get(const wstring& key) {
-			auto it = find(key);
-			return (it != end()) ? it->second : nullptr;
-		}
-	};
-
-
-	template<typename T>
-	class SyncObjectStorageBase {
-	protected:
-		SyncMap<T> m_global_list;
-	public:
-
-		bool isObjectValid(const wstring& key) {
-			T* result=m_global_list.get(key);
-			return result? result->isValid() : false;
-		}
-		size_t collectionSize() {
-			return m_global_list.size();
-		}
-		T* getObject(const wstring& key, bool* isnew=nullptr) {
-			T* result = m_global_list.get(key);
-			if (!result && isnew && *isnew) {
-				result = new T(key);
-				result->reset_to_now();
-				m_global_list.insert(make_pair(key, result));
-			} else if (isnew) *isnew = false;
-			return result;
-		}
-	};
-
-
 	class SyncObjectsStorage:public SyncObjectStorageBase<Sync_ObjectDB> {
 		wstring m_server, m_database, m_user, m_password;
 		unordered_map<wstring,tuple<wstring,wstring,wstring>>m_queries; 
@@ -336,7 +283,7 @@ namespace hb {
 				if (r && queries) {
 					ptime rt = con.readupdate(key, get<1>(*queries));
 					if (rt.is_not_a_date_time()) r = false;
-					else result->remoteTime(rt);
+					else result->remote(rt);
 				}
 				return r;
 			}
@@ -351,7 +298,7 @@ namespace hb {
 				if (r && queries) {
 					ptime rt = con.readupdate(key, get<0>(*queries));
 					if (rt.is_not_a_date_time()) r = false;
-					else result->remoteAndLocalTime(rt);
+					else result->remoteAndLocal(rt);
 				}
 				return r;
 			}
@@ -369,7 +316,7 @@ namespace hb {
 					if (obj) {
 						ptime rt = get<1>(rcol[i]);
 						if (!rt.is_not_a_date_time()) {
-							obj->remoteTime(rt);
+							obj->remote(rt);
 							result.push_back(make_tuple(obj->key(), obj->isValid()));
 						}
 					}
